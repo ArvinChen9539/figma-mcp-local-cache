@@ -3,14 +3,13 @@ import logging
 import os
 import sys
 from datetime import datetime
-from sqlalchemy.orm import Session
-from app.models import FigmaData
+from app.repository import FigmaDataRepository
 from app.services.figma import FigmaService, process_figma_response
 
 logger = logging.getLogger(__name__)
 
 def get_figma_data_tool(
-    db: Session,
+    repo: FigmaDataRepository,
     token: str,
     file_key: str,
     node_id: str = None,
@@ -19,16 +18,11 @@ def get_figma_data_tool(
 ):
     """
     获取 Figma 数据。
-    优先查库，若无则调用 Figma API 并缓存。
+    优先查库/缓存，若无则调用 Figma API 并缓存。
     """
     # Check cache
-    query = db.query(FigmaData).filter(FigmaData.file_key == file_key)
-    if node_id:
-        query = query.filter(FigmaData.node_id == node_id)
-    else:
-        query = query.filter(FigmaData.node_id.is_(None))
+    cached_item = repo.get_data(file_key, node_id)
     
-    cached_item = query.first()
     if cached_item and not force_refresh:
         print(
             f"\n{'='*50}\n[Figma MCP] 命中本地缓存 (Cache HIT)\nFile Key: {file_key}\nNode ID: {node_id}\n{'='*50}\n",
@@ -62,12 +56,6 @@ def get_figma_data_tool(
         # Process
         processed_data = process_figma_response(raw_data, depth)
         
-        # Save to DB
-        # Check if exists again (race condition) or use upsert logic if needed, but simple add is fine for now
-        # Actually better to check if we should update an old record?
-        # For now, just create new. The frontend has "delete" feature.
-        # Or better: if exists update, else insert.
-        
         meta = processed_data.get("metadata", {}) if isinstance(processed_data, dict) else {}
         name = meta.get("name")
         last_modified_str = meta.get("lastModified")
@@ -78,23 +66,15 @@ def get_figma_data_tool(
                 last_modified_dt = datetime.strptime(last_modified_str, "%Y-%m-%dT%H:%M:%SZ")
             except Exception:
                 last_modified_dt = None
-        if cached_item:
-            cached_item.data = json.dumps(processed_data)
-            cached_item.depth = depth
-            cached_item.name = name
-            cached_item.last_modified = last_modified_dt
-        else:
-            new_cache = FigmaData(
-                file_key=file_key,
-                node_id=node_id,
-                depth=depth,
-                name=name,
-                last_modified=last_modified_dt,
-                data=json.dumps(processed_data)
-            )
-            db.add(new_cache)
         
-        db.commit()
+        repo.save_data(
+            file_key=file_key,
+            node_id=node_id,
+            data=json.dumps(processed_data),
+            name=name,
+            depth=depth,
+            last_modified=last_modified_dt
+        )
         
         return processed_data
     except Exception as e:

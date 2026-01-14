@@ -15,12 +15,39 @@ logging.basicConfig(
 # Ensure app can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from app.database import SessionLocal
 from app.services.mcp_tools import get_figma_data_tool, download_figma_images_tool
+from app.repository import FileSystemRepository, MySQLRepository
 
 load_dotenv()
 
 mcp = FastMCP("Figma MCP Cache")
+
+def get_repo_and_session():
+    """
+    Determine which repository to use based on environment variables.
+    Returns (repo, db_session). db_session is None if not using DB.
+    """
+    # 1. External File Persistence
+    data_folder = os.getenv("FIGMA_FILE_DATA_FOLDER")
+    if data_folder:
+        return FileSystemRepository(data_folder), None
+    
+    # 2. MySQL Configuration (Check if explicitly configured)
+    # We check for DB_HOST or DB_PASSWORD to decide if we should use MySQL.
+    # Default behavior in database.py is localhost/root/no-pass, so if user relies on that,
+    # they might need to ensure DB_HOST is set or we fallback to file.
+    # Given the requirement "No config -> internal cache", we assume MySQL usage implies explicit config.
+    if os.getenv("DB_HOST") or os.getenv("DB_PASSWORD"):
+        try:
+            from app.database import SessionLocal
+            db = SessionLocal()
+            return MySQLRepository(db), db
+        except Exception as e:
+            logging.error(f"Failed to connect to MySQL: {e}. Falling back to internal cache.")
+    
+    # 3. Internal Cache (Default)
+    internal_cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_cache")
+    return FileSystemRepository(internal_cache_path), None
 
 @mcp.tool()
 def get_figma_data(file_key: str, node_id: str = None, depth: int = None) -> str:
@@ -31,14 +58,16 @@ def get_figma_data(file_key: str, node_id: str = None, depth: int = None) -> str
     if not token:
         return "Error: FIGMA_ACCESS_TOKEN not set"
     
-    db = SessionLocal()
+    repo, db_session = get_repo_and_session()
+    
     try:
-        data = get_figma_data_tool(db, token, file_key, node_id, depth)
+        data = get_figma_data_tool(repo, token, file_key, node_id, depth)
         return json.dumps(data, indent=2, ensure_ascii=False)
     except Exception as e:
         return f"Error: {str(e)}"
     finally:
-        db.close()
+        if db_session:
+            db_session.close()
 
 @mcp.tool()
 def download_figma_images(file_key: str, nodes: str, local_path: str, png_scale: float = 2.0) -> str:

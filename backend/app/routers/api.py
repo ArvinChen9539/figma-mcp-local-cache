@@ -4,6 +4,7 @@ from app.database import get_db
 from app.models import FigmaData
 from app.schemas import FigmaDataResponse
 from app.services.mcp_tools import get_figma_data_tool
+from app.repository import MySQLRepository
 import os
 import json
 
@@ -98,8 +99,9 @@ def sync_cache(id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="FIGMA_ACCESS_TOKEN not set")
         
     try:
+        repo = MySQLRepository(db)
         get_figma_data_tool(
-            db=db,
+            repo=repo,
             token=token,
             file_key=item.file_key,
             node_id=item.node_id,
